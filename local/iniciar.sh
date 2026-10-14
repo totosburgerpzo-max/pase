@@ -81,7 +81,15 @@ if [ -n "$NUEVA" ]; then
   done
 fi
 
-parar() { [ -f "$DATOS/$1.pid" ] && kill "$(cat "$DATOS/$1.pid")" 2>/dev/null || true; rm -f "$DATOS/$1.pid"; }
+# Detiene un servicio y espera a que suelte su puerto
+parar() {
+  if [ -f "$DATOS/$1.pid" ]; then
+    pid=$(cat "$DATOS/$1.pid")
+    kill "$pid" 2>/dev/null || true
+    for i in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    rm -f "$DATOS/$1.pid"
+  fi
+}
 
 # 4. GoTrue
 parar gotrue
@@ -105,7 +113,7 @@ echo $! >"$DATOS/postgrest.pid"
 # 6. Edge Functions (las variables son las mismas que Supabase da a cada función)
 parar funciones
 SUPABASE_URL=http://127.0.0.1:54321 SUPABASE_ANON_KEY="$ANON_KEY" SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY" \
-  PASE_CORREO_DOMINIO=personal.pase.invalid \
+  PASE_CORREO_DOMINIO=personal.pase.invalid DENO_NO_UPDATE_CHECK=1 \
   nohup "$BIN/deno" run --allow-net --allow-env --allow-read "$AQUI/funciones.ts" >"$DATOS/funciones.log" 2>&1 &
 echo $! >"$DATOS/funciones.pid"
 
@@ -128,5 +136,5 @@ for i in $(seq 1 60); do
   sleep 0.5
 done
 echo "Algo no arrancó; revisa los registros en $DATOS/*.log"
-tail -5 "$DATOS"/*.log
+tail -n 5 "$DATOS"/*.log
 exit 1

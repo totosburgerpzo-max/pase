@@ -981,6 +981,10 @@ grant execute on function
   public.cerrar_sesion_equipo()
   to authenticated;
 
+-- Un equipo solo se registra desde él mismo, con 2FA (registrar_este_dispositivo): la versión
+-- anterior devolvía el secreto a cualquier sesión con permiso, aunque fuera de otra tablet.
+revoke execute on function public.registrar_dispositivo(uuid, text, text, uuid) from authenticated;
+
 revoke execute on function
   public.pin_abrir_sesion(uuid, text, text),
   public.pin_vincular_sesion(uuid, uuid, uuid, text),
