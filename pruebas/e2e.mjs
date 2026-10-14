@@ -75,10 +75,21 @@ const page = await contexto.newPage();
 const errores = [];
 page.on('pageerror', (e) => errores.push(e.message));
 page.on('requestfailed', (r) => { if (!r.url().includes('/auth/v1/health') && r.failure()?.errorText !== 'net::ERR_INTERNET_DISCONNECTED') console.log('  petición fallida', r.url(), r.failure()?.errorText); });
-const foto = async (nombre, completa = false) => {
-  if (completa) { await page.evaluate(() => window.scrollTo(0, 0)); await page.waitForTimeout(100); }
-  await page.screenshot({ path: path.join(CAPTURAS, `${String(++n).padStart(2, '0')}-${nombre}.png`), fullPage: completa });
+const foto = async (nombre, completa = false, p = page) => {
+  if (completa) { await p.evaluate(() => window.scrollTo(0, 0)); await p.waitForTimeout(100); }
+  await p.screenshot({ path: path.join(CAPTURAS, `${String(++n).padStart(2, '0')}-${nombre}.png`), fullPage: completa });
 };
+// Link de un correo de Auth sin mandar el correo (lo que haría el script de publicación con /invite)
+async function linkDeCorreo(tipo, email) {
+  const r = await fetch('http://127.0.0.1:54321/auth/v1/admin/generate_link', {
+    method: 'POST',
+    headers: { apikey: llaves.SERVICE_ROLE_KEY, authorization: `Bearer ${llaves.SERVICE_ROLE_KEY}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ type: tipo, email, redirect_to: `${WEB}/` }),
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(`generate_link ${tipo}: ${JSON.stringify(j)}`);
+  return j;
+}
 
 const teclado = () => page.getByRole('group', { name: 'Teclado numérico' });
 async function entrar(pin) {
@@ -348,7 +359,83 @@ try {
                                    where e.realizada_por = $1 order by e.completada_en desc limit 1`, [ana.id])).rows[0];
   ok(offline?.registrada_sin_conexion && offline.metodo === 'pin_sin_conexion', 'E11 al volver la señal se envía sola, a nombre de Ana y marcada sin conexión', offline);
 
-  ok(!errores.length, 'E12 sin errores de JavaScript en toda la prueba', errores);
+  /* ---------- 8. Una gerente nueva llega por su correo de invitación ---------- */
+  const NUEVA = { correo: 'gabriela@pase.test', clave: 'Gabriela-Pase-2026' };
+  const invitacion = await linkDeCorreo('invite', NUEVA.correo);
+  await db.query(`select app.alta_gerente($1, 'Gabriela', 'Suárez')`, [invitacion.id]);
+  const ctx2 = await navegador.newContext({ viewport: { width: 1180, height: 820 }, locale: 'es-VE', timezoneId: ZONA, serviceWorkers: 'allow' });
+  const p2 = await ctx2.newPage();
+  p2.on('pageerror', (e) => errores.push(e.message));
+  await p2.goto(invitacion.action_link);
+  await p2.getByRole('heading', { name: 'Crea tu contraseña' }).waitFor({ timeout: 20_000 });
+  ok(!p2.url().includes('access_token'), 'E12 el link de la invitación abre la app y la sesión no queda en la barra de direcciones');
+  await p2.getByLabel('Contraseña nueva').fill(NUEVA.clave);
+  await p2.getByLabel('Repítela').fill(NUEVA.clave);
+  await foto('invitacion-crear-clave', false, p2);
+  await p2.getByRole('button', { name: 'Guardar contraseña' }).click();
+  await p2.getByRole('heading', { name: 'Activa la verificación en dos pasos' }).waitFor({ timeout: 20_000 });
+  const secreto2 = (await p2.locator('code').innerText()).replace(/\s/g, '');
+  await p2.getByLabel('Código de 6 números').fill(totp(secreto2));
+  await p2.getByRole('button', { name: 'Verificar' }).click();
+  await p2.getByRole('heading', { name: 'Tu PIN de gerente' }).waitFor({ timeout: 20_000 });
+  await p2.getByRole('button', { name: 'Generar mi PIN' }).click();
+  const pinGabriela = (await p2.getByLabel('Tu PIN nuevo').innerText()).trim();
+  await foto('invitacion-pin-nuevo', false, p2);
+  await p2.getByRole('button', { name: 'Ya me lo aprendí' }).click();
+  await p2.getByLabel('Escríbelo de memoria').fill(pinGabriela);
+  await p2.getByRole('button', { name: 'Continuar' }).click();
+  await p2.getByRole('heading', { name: 'Este equipo' }).waitFor();
+  await p2.getByLabel('Nombre', { exact: true }).fill('PC de gerencia');
+  await p2.getByRole('radio', { name: 'PC de gerencia' }).click();
+  ok((await p2.getByLabel('Tu PIN').inputValue()) === pinGabriela, 'E12 genera su PIN de 6 dígitos, lo confirma de memoria y queda listo para firmar el registro');
+  await p2.getByRole('button', { name: 'Registrar este equipo' }).click();
+  await p2.getByRole('group', { name: 'Teclado numérico' }).waitFor({ timeout: 20_000 });
+  await p2.keyboard.type(pinGabriela, { delay: 70 });
+  await p2.waitForTimeout(150);
+  await p2.keyboard.press('Enter');
+  await p2.getByRole('heading', { name: 'Panel del día' }).waitFor({ timeout: 20_000 });
+  await foto('invitacion-primer-ingreso', false, p2);
+  ok(/^\d{6}$/.test(pinGabriela), 'E12 la gerente nueva registra su PC y entra con su PIN');
+  await p2.getByRole('button', { name: 'Bloquear y cambiar de usuario' }).click();
+  await p2.getByRole('group', { name: 'Teclado numérico' }).waitFor();
+
+  /* ---------- 9. Contraseña olvidada ---------- */
+  const NUEVA_CLAVE = 'Gabriela-Nueva-2026';
+  const recuperacion = await linkDeCorreo('recovery', NUEVA.correo);
+  await p2.goto(recuperacion.action_link);
+  await p2.getByRole('heading', { name: 'Código de verificación' }).waitFor({ timeout: 20_000 });
+  await p2.getByLabel('Código de 6 números').fill(totp(secreto2));
+  await p2.getByRole('button', { name: 'Verificar' }).click();
+  await p2.getByRole('heading', { name: 'Contraseña nueva' }).waitFor({ timeout: 20_000 });
+  await p2.getByLabel('Contraseña nueva').fill(NUEVA_CLAVE);
+  await p2.getByLabel('Repítela').fill(NUEVA_CLAVE);
+  await p2.getByRole('button', { name: 'Guardar contraseña' }).click();
+  await p2.getByText('Contraseña guardada.').waitFor({ timeout: 20_000 });
+  ok(await p2.getByRole('group', { name: 'Teclado numérico' }).isVisible(), 'E13 con el link de recuperación pide el código de la app, cambia la contraseña y vuelve al bloqueo');
+
+  const ctx3 = await navegador.newContext({ viewport: { width: 1180, height: 820 }, locale: 'es-VE', timezoneId: ZONA });
+  const p3 = await ctx3.newPage();
+  p3.on('pageerror', (e) => errores.push(e.message));
+  await p3.goto(`${WEB}/#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired`);
+  await p3.getByRole('heading', { name: 'Este link ya no sirve' }).waitFor({ timeout: 20_000 });
+  await foto('link-vencido', false, p3);
+  await p3.getByRole('button', { name: 'Ir a la entrada' }).click();
+  await p3.getByRole('button', { name: 'Soy la gerente: empezar' }).click();
+  await p3.getByLabel('Correo').fill(NUEVA.correo);
+  await p3.getByRole('button', { name: '¿Olvidaste tu contraseña?' }).click();
+  await p3.getByText(/le llegó un correo con un link/).waitFor({ timeout: 20_000 });
+  await foto('olvide-mi-clave', false, p3);
+  await p3.getByLabel('Contraseña').fill(NUEVA_CLAVE);
+  await p3.getByRole('button', { name: 'Continuar' }).click();
+  await p3.getByRole('heading', { name: 'Código de verificación' }).waitFor({ timeout: 20_000 });
+  await p3.getByLabel('Código de 6 números').fill(totp(secreto2));
+  await p3.getByRole('button', { name: 'Verificar' }).click();
+  await p3.getByRole('heading', { name: 'Este equipo' }).waitFor({ timeout: 20_000 });
+  ok(true, 'E14 un link vencido se explica, «¿Olvidaste tu contraseña?» pide el correo, y la contraseña nueva sirve (ya con PIN, va directo al equipo)');
+  await ctx2.close();
+  await ctx3.close();
+
+  ok(!errores.length, 'E15 sin errores de JavaScript en toda la prueba', errores);
   console.log(`\nPrueba de punta a punta: todo pasó. Capturas en ${path.relative(RAIZ, CAPTURAS)}/`);
 } catch (e) {
   await foto('fallo', true).catch(() => {});

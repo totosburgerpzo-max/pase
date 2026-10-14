@@ -88,6 +88,9 @@ function traducir(m: string): string {
   if (/rate limit|too many/i.test(m)) return 'Demasiados intentos seguidos. Espera un momento.';
   if (/Email not confirmed/i.test(m)) return 'La cuenta todavía no está confirmada';
   if (/JWT expired/i.test(m)) return 'La sesión venció. Vuelve a entrar con tu PIN.';
+  if (/different from the old password/i.test(m)) return 'La contraseña nueva tiene que ser distinta de la anterior.';
+  if (/Password should|weak password/i.test(m)) return 'Esa contraseña es muy débil. Usa una más larga, que no sea fácil de adivinar.';
+  if (/AAL2 session is required/i.test(m)) return 'Primero escribe el código de tu app autenticadora.';
   return m;
 }
 
@@ -115,6 +118,10 @@ export const auth = {
     const d = await pedir<{ id: string }>(`/auth/v1/factors/${factor}/challenge`, { cuerpo: {}, tokenPropio: t });
     return pedir<any>(`/auth/v1/factors/${factor}/verify`, { cuerpo: { challenge_id: d.id, code: codigo }, tokenPropio: t });
   },
+  cambiarClave: (t: string, password: string) => pedir('/auth/v1/user', { metodo: 'PUT', cuerpo: { password }, tokenPropio: t }),
+  // El correo trae un link de vuelta a esta misma página (debe estar en la lista de Auth)
+  recuperar: (email: string) =>
+    pedir(`/auth/v1/recover?redirect_to=${encodeURIComponent(location.origin + location.pathname)}`, { cuerpo: { email }, sinToken: true }),
   salir: (t: string) => pedir('/auth/v1/logout?scope=local', { cuerpo: {}, tokenPropio: t }).catch(() => {}),
   rpcCon: <T = any>(t: string, nombre: string, args: Record<string, unknown> = {}) =>
     pedir<T>(`/rest/v1/rpc/${nombre}`, { cuerpo: args, tokenPropio: t }),

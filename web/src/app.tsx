@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CONFIG, ErrorApi, cuandoSePierdaLaSesion, funcion, hayServidor, rpc, usarSesion, type Sesion } from './api';
+import { CONFIG, ErrorApi, auth, cuandoSePierdaLaSesion, funcion, hayServidor, rpc, usarSesion, type Sesion } from './api';
 import {
   bloqueadoHasta, equipoLocal, guardar, identificarSinConexion, leer, limpiarFallos, olvidarEquipo, recordarPin,
   registrarFallo, comprobarSinConexion, type EquipoLocal,
@@ -11,6 +11,7 @@ import { PinConfirmModal, IconoCandado, IconoSinSenal, iniciales, type Resultado
 import { Boton, IcoCampana, IcoNube, IcoSenal, IcoSync, ROL, cx, hora } from './ui/comun';
 import { Bloqueo, CambioPin, EquipoDadoDeBaja, Marca } from './pantallas/Bloqueo';
 import { Registro } from './pantallas/Registro';
+import { Clave, leerLinkDeCorreo, type LinkCorreo } from './pantallas/Clave';
 import { Inicio } from './pantallas/Inicio';
 import { Planilla } from './pantallas/Planilla';
 import { Falla, Incidencias } from './pantallas/Incidencias';
@@ -21,7 +22,7 @@ import { Bitacora } from './pantallas/Bitacora';
 import { Cola } from './pantallas/Cola';
 
 type Fase =
-  | { id: 'cargando' } | { id: 'registro' } | { id: 'baja' } | { id: 'bloqueo' }
+  | { id: 'cargando' } | { id: 'registro'; sesion?: string } | { id: 'clave'; link: LinkCorreo } | { id: 'baja' } | { id: 'bloqueo' }
   | { id: 'cambio_pin'; contexto: Contexto; pin: string }
   | { id: 'app'; contexto: Contexto; enLinea: boolean };
 
@@ -36,12 +37,15 @@ export function App() {
   const [hoyCache, setHoyCache] = useState<Hoy | null>(null);
 
   useEffect(() => {
+    // Link de un correo de Auth (invitación o contraseña olvidada): se lee y se borra de la barra
+    const link = leerLinkDeCorreo();
+    if (link) history.replaceState(null, '', location.pathname + location.search);
     void (async () => {
       const e = await equipoLocal();
       setEquipo(e);
       setCola(await pendientes());
       setHoyCache((await leer<Hoy>('kv', 'hoy:10')) ?? null);
-      setFase(e ? { id: 'bloqueo' } : { id: 'registro' });
+      setFase(link ? { id: 'clave', link } : e ? { id: 'bloqueo' } : { id: 'registro' });
     })();
   }, []);
 
@@ -161,7 +165,15 @@ export function App() {
 
   let contenido: React.ReactNode;
   if (fase.id === 'cargando') contenido = <main className="acero grid flex-1 place-items-center"><Marca /></main>;
-  else if (fase.id === 'registro') contenido = <Registro onRegistrado={registrado} />;
+  else if (fase.id === 'registro') contenido = <Registro key={fase.sesion ?? ''} onRegistrado={registrado} sesionInicial={fase.sesion} />;
+  else if (fase.id === 'clave') contenido = (
+    <Clave link={fase.link} onSalir={() => setFase(equipo ? { id: 'bloqueo' } : { id: 'registro' })}
+      onListo={(token) => {
+        // En un equipo ya registrado solo se cambia la contraseña; si no, sigue el registro con esa sesión
+        if (equipo) { void auth.salir(token); setFase({ id: 'bloqueo' }); avisar('Contraseña guardada.', 'bien'); }
+        else setFase({ id: 'registro', sesion: token });
+      }} />
+  );
   else if (fase.id === 'baja') contenido = <EquipoDadoDeBaja onRegistrar={registrarDeNuevo} />;
   else if (fase.id === 'bloqueo' || !equipo) contenido = (
     <Bloqueo equipo={equipo!} enLinea={red} porEnviar={cola.length} hoy={hoyCache} onPin={entrar} />

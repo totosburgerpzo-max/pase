@@ -474,5 +474,65 @@ do $$ declare b jsonb; v jsonb; begin
   raise notice 'OK A22 bitácora con nombres, equipo, IP y método; cadena íntegra en % registros', v ->> 'registros';
 end $$;
 
+-- =============================================================================
+-- Primer ingreso de una gerente
+-- =============================================================================
+-- A23: la alta de una gerente se hace solo desde el editor SQL, nunca desde la API
+reset role;
+insert into auth.users (id, email) values ('f1000000-0000-4000-8000-00000000000a', 'nueva.gerente@pase.test');
+select pg_temp.sesion('f1000000-0000-4000-8000-000000000001', 'c1000000-0000-4000-8000-000000000020', 'aal2'); set role authenticated;
+do $$ begin
+  perform app.alta_gerente('f1000000-0000-4000-8000-00000000000a', 'Nueva', 'Gerente');
+  raise exception 'FALLO A23 una sesión de la API dio de alta a una gerente';
+exception when insufficient_privilege then
+  raise notice 'OK A23 la API no puede dar de alta gerentes: %', sqlerrm;
+end $$;
+reset role; select set_config('request.jwt.claims', '', false);
+do $$ declare v uuid; begin
+  v := app.alta_gerente('f1000000-0000-4000-8000-00000000000a', 'Nueva', 'Gerente');
+  assert app.alta_gerente('f1000000-0000-4000-8000-00000000000a', 'Otra', 'Vez') = v, 'repetir la alta creó otra persona';
+  assert (select rol || '/' || nombre from public.usuarios where id = v) = 'admin/Nueva';
+  assert not exists (select 1 from privado.credenciales_pin where usuario_id = v), 'la alta creó un PIN';
+  begin
+    perform app.alta_gerente(gen_random_uuid(), 'Sin', 'Cuenta');
+    raise exception 'FALLO A23 alta sin cuenta de acceso';
+  exception when raise_exception then
+    assert sqlerrm = 'No existe esa cuenta de acceso', sqlerrm;
+  end;
+  perform set_config('t.nueva', v::text, false);
+  raise notice 'OK A23 alta desde el editor SQL: queda como gerente, sin PIN, y repetirla no duplica';
+end $$;
+
+-- A24: genera su PIN solo con contraseña y segundo factor, y con él registra su equipo
+reset role; select pg_temp.sesion('f1000000-0000-4000-8000-00000000000a', 'c1000000-0000-4000-8000-000000000021', 'aal1'); set role authenticated;
+do $$ declare r jsonb; begin
+  r := public.nuevo_pin_gerente();
+  assert r ->> 'motivo' = 'requiere_2fa', r::text;
+end $$;
+reset role; select pg_temp.sesion('f1000000-0000-4000-8000-000000000002', 'c1000000-0000-4000-8000-000000000022', 'aal2'); set role authenticated;
+do $$ declare r jsonb; begin
+  r := public.nuevo_pin_gerente();
+  assert r ->> 'motivo' = 'sin_permiso', r::text;
+end $$;
+reset role; select pg_temp.sesion('f1000000-0000-4000-8000-00000000000a', 'c1000000-0000-4000-8000-000000000021', 'aal2'); set role authenticated;
+do $$ declare r jsonb; r2 jsonb; c jsonb; v_disp uuid := gen_random_uuid(); begin
+  c := public.pase_contexto();
+  assert jsonb_typeof(c -> 'pin') = 'null', 'la gerente nueva ya tenía PIN: ' || c::text;
+  r := public.nuevo_pin_gerente();
+  assert (r ->> 'ok')::boolean and r ->> 'pin' ~ '^[0-9]{6}$', r::text;
+  c := public.pase_contexto();
+  assert (c -> 'pin' ->> 'longitud')::int = 6 and not (c -> 'pin' ->> 'debe_cambiar')::boolean, c::text;
+  -- «Olvidé mi PIN»: genera otro y el anterior deja de valer
+  r2 := public.nuevo_pin_gerente();
+  assert r2 ->> 'pin' <> r ->> 'pin';
+  assert public.registrar_este_dispositivo(v_disp, 'PC gerencia nueva', 'pc_gerencia', r ->> 'pin') ->> 'motivo' = 'pin_incorrecto';
+  r := public.registrar_este_dispositivo(v_disp, 'PC gerencia nueva', 'pc_gerencia', r2 ->> 'pin');
+  assert (r ->> 'ok')::boolean and length(r ->> 'secreto') = 64, r::text;
+  assert exists (select 1 from jsonb_array_elements(public.pase_bitacora(now() - interval '5 minutes', clock_timestamp())) x
+                 where x ->> 'accion' = 'PIN_REGENERADO' and x ->> 'usuario' = 'Nueva Gerente'), 'falta el PIN en la bitácora';
+  assert (public.pase_verificar_bitacora() ->> 'integra')::boolean, 'la cadena se rompió';
+  raise notice 'OK A24 la gerente genera su PIN con segundo factor (supervisores no), lo puede regenerar y registra su equipo con él';
+end $$;
+
 \o
 \echo 'Pruebas de la API de la fase 1: todas pasaron'

@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { auth, reclamos, type Factor } from '../api';
 import { guardarEquipo, type EquipoLocal } from '../local';
 import { mensajeDe } from '../contexto';
-import type { TipoEquipo } from '../tipos';
+import type { Contexto, TipoEquipo } from '../tipos';
 import { IconoAlerta, IconoEscudo } from '../ui/PinConfirmModal';
 import { Boton, Campo, Ojo, claseEntrada, cx } from '../ui/comun';
 import { Marca } from './Bloqueo';
@@ -10,14 +10,16 @@ import { Marca } from './Bloqueo';
 /*
  * Registro de este equipo. Solo la gerente, en el propio equipo:
  *   1. correo y contraseña  2. código de su app autenticadora (la primera vez, la activa con un QR)
- *   3. nombre del equipo y su PIN.
+ *   3. nombre del equipo y su PIN (si aún no tiene, o lo olvidó, lo genera aquí y lo ve una sola vez).
+ * Si llega desde el link de su invitación, ya trae la sesión y empieza en el paso 2.
  * El servidor devuelve un secreto que se guarda cifrado aquí y nunca se vuelve a mostrar.
  */
 type Paso =
-  | { id: 'inicio' }
+  | { id: 'inicio' } | { id: 'cargando' }
   | { id: 'correo' }
   | { id: 'activar'; token: string; factor: string; qr: string; secreto: string }
   | { id: 'codigo'; token: string; factor: string }
+  | { id: 'pin'; token: string; primera: boolean }
   | { id: 'equipo'; token: string };
 
 const TIPOS: { id: TipoEquipo; t: string }[] = [
@@ -25,42 +27,85 @@ const TIPOS: { id: TipoEquipo; t: string }[] = [
   { id: 'pc_gerencia', t: 'PC de gerencia' }, { id: 'telefono', t: 'Teléfono' },
 ];
 
-export function Registro({ onRegistrado }: { onRegistrado: (e: EquipoLocal) => void }) {
-  const [paso, setPaso] = useState<Paso>({ id: 'inicio' });
-  const [correo, setCorreo] = useState('');
+export function Registro({ onRegistrado, sesionInicial }: { onRegistrado: (e: EquipoLocal) => void; sesionInicial?: string }) {
+  const [paso, setPaso] = useState<Paso>(sesionInicial ? { id: 'cargando' } : { id: 'inicio' });
+  const [correo, setCorreo] = useState(() => (sesionInicial ? String(reclamos(sesionInicial).email ?? '') : ''));
   const [clave, setClave] = useState('');
   const [codigo, setCodigo] = useState('');
   const [nombre, setNombre] = useState('');
   const [tipo, setTipo] = useState<TipoEquipo>('tablet_cocina');
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [trabajando, setTrabajando] = useState(false);
+  const [pinNuevo, setPinNuevo] = useState<{ pin: string; visto: boolean } | null>(null);
+  const [confirmacion, setConfirmacion] = useState('');
 
   const hacer = async (f: () => Promise<void>) => {
     setError(null);
+    setInfo(null);
     setTrabajando(true);
     try { await f(); } catch (e) { setError(mensajeDe(e)); } finally { setTrabajando(false); }
   };
 
+  // Con la sesión de correo y contraseña: pide el código de la app, o la activa la primera vez
+  const seguirCon = async (token: string) => {
+    if (reclamos(token).aal === 'aal2') return conSegundoFactor(token);
+    const u = await auth.usuario(token);
+    const totp = (u.factors ?? []).filter((f: Factor) => f.factor_type === 'totp');
+    const listo = totp.find((f) => f.status === 'verified');
+    if (listo) { setPaso({ id: 'codigo', token, factor: listo.id }); return; }
+    for (const f of totp) await auth.borrarFactor(token, f.id).catch(() => {});
+    const n = await auth.inscribirTotp(token);
+    // GoTrue entrega el QR como SVG; se muestra como data URI
+    const qr = n.totp.qr_code.startsWith('data:') ? n.totp.qr_code : `data:image/svg+xml;utf-8,${encodeURIComponent(n.totp.qr_code)}`;
+    setPaso({ id: 'activar', token, factor: n.id, qr, secreto: n.totp.secret });
+  };
+
+  // Ya con el segundo factor: si todavía no tiene PIN, lo genera antes de registrar el equipo
+  const conSegundoFactor = async (token: string) => {
+    const ctx = await auth.rpcCon<Contexto | null>(token, 'pase_contexto');
+    if (!ctx) { await auth.salir(token); throw new Error('Esta cuenta no tiene acceso a Pase.'); }
+    if (ctx.usuario.rol !== 'admin') { await auth.salir(token); throw new Error('Solo la gerente registra equipos.'); }
+    setPaso(ctx.pin ? { id: 'equipo', token } : { id: 'pin', token, primera: true });
+  };
+
+  const iniciado = useRef(false);
+  useEffect(() => {
+    if (!sesionInicial || iniciado.current) return;
+    iniciado.current = true;
+    void hacer(async () => {
+      try { await seguirCon(sesionInicial); } catch (e) { setPaso({ id: 'correo' }); throw e; }
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const entrar = () => hacer(async () => {
     const s = await auth.entrar(correo.trim(), clave);
     setClave('');
-    const u = await auth.usuario(s.access_token);
-    const totp = (u.factors ?? []).filter((f: Factor) => f.factor_type === 'totp');
-    const listo = totp.find((f) => f.status === 'verified');
-    if (listo) { setPaso({ id: 'codigo', token: s.access_token, factor: listo.id }); return; }
-    for (const f of totp) await auth.borrarFactor(s.access_token, f.id).catch(() => {});
-    const n = await auth.inscribirTotp(s.access_token);
-    // GoTrue entrega el QR como SVG; se muestra como data URI
-    const qr = n.totp.qr_code.startsWith('data:') ? n.totp.qr_code : `data:image/svg+xml;utf-8,${encodeURIComponent(n.totp.qr_code)}`;
-    setPaso({ id: 'activar', token: s.access_token, factor: n.id, qr, secreto: n.totp.secret });
+    await seguirCon(s.access_token);
+  });
+
+  const olvide = () => hacer(async () => {
+    if (!/^\S+@\S+\.\S+$/.test(correo.trim())) throw new Error('Escribe tu correo arriba y vuelve a tocar «¿Olvidaste tu contraseña?».');
+    await auth.recuperar(correo.trim());
+    setInfo(`Si ${correo.trim()} es la cuenta de una gerente de Pase, le llegó un correo con un link para crear una contraseña nueva. Ábrelo en este equipo.`);
   });
 
   const verificar = (token: string, factor: string) => hacer(async () => {
     const s = await auth.verificarTotp(token, factor, codigo.trim());
     setCodigo('');
     if (reclamos(s.access_token).aal !== 'aal2') throw new Error('No se completó la verificación en dos pasos');
-    setPaso({ id: 'equipo', token: s.access_token });
+    await conSegundoFactor(s.access_token);
+  });
+
+  const generarPin = (token: string) => hacer(async () => {
+    const r = await auth.rpcCon<{ ok: boolean; motivo?: string; pin?: string }>(token, 'nuevo_pin_gerente');
+    if (!r.ok || !r.pin) {
+      throw new Error(r.motivo === 'requiere_2fa' ? 'Falta el código de verificación.' : r.motivo === 'sin_permiso'
+        ? 'Solo la gerente genera su PIN aquí.' : `No se pudo generar el PIN (${r.motivo ?? 'error'})`);
+    }
+    setConfirmacion('');
+    setPinNuevo({ pin: r.pin, visto: false });
   });
 
   const registrar = (token: string) => hacer(async () => {
@@ -86,7 +131,7 @@ export function Registro({ onRegistrado }: { onRegistrado: (e: EquipoLocal) => v
       <div className="w-full max-w-[560px] rounded-[10px] border border-linea bg-superficie p-6 shadow-[0_20px_50px_-30px_rgb(0_0_0/0.5)] sm:p-8">
         <div className="flex items-center justify-between gap-3">
           <Marca chica />
-          {paso.id !== 'inicio' && <Ojo>Paso {paso.id === 'correo' ? 1 : paso.id === 'equipo' ? 3 : 2} de 3</Ojo>}
+          {paso.id !== 'inicio' && paso.id !== 'cargando' && <Ojo>Paso {paso.id === 'correo' ? 1 : paso.id === 'equipo' || paso.id === 'pin' ? 3 : 2} de 3</Ojo>}
         </div>
 
         {paso.id === 'inicio' && (
@@ -94,7 +139,8 @@ export function Registro({ onRegistrado }: { onRegistrado: (e: EquipoLocal) => v
             <h1 className="mt-6 font-display text-[42px] font-black uppercase leading-[0.9]">Registrar este equipo</h1>
             <p className="mt-3 text-[17px] leading-snug text-tenue">
               Antes de usar Pase en esta tablet o computadora, la gerente la registra una sola vez. Necesita su correo, su contraseña,
-              la app autenticadora del teléfono (Google Authenticator, Microsoft Authenticator o similar) y su PIN.
+              la app autenticadora del teléfono (Google Authenticator, Microsoft Authenticator o similar) y su PIN. Si todavía no
+              tiene PIN, lo crea aquí mismo.
             </p>
             <p className="mt-3 text-[15px] leading-snug text-tenue">Abrir este link en un equipo no registrado no da acceso a nada.</p>
             <Boton variante="primario" alto="lg" className="mt-6" onClick={() => setPaso({ id: 'correo' })}>Soy la gerente: empezar</Boton>
@@ -111,11 +157,61 @@ export function Registro({ onRegistrado }: { onRegistrado: (e: EquipoLocal) => v
               <input type="password" autoComplete="current-password" required value={clave} onChange={(e) => setClave(e.target.value)} className={claseEntrada} />
             </Campo>
             <MensajeError texto={error} />
-            <div className="flex gap-2">
+            {info && <p className="text-[15px] font-semibold leading-snug text-bien" role="status">{info}</p>}
+            <div className="flex flex-wrap items-center gap-2">
               <Boton type="submit" variante="primario" alto="lg" disabled={trabajando || !correo || !clave}>{trabajando ? 'Entrando…' : 'Continuar'}</Boton>
               <Boton variante="fantasma" alto="lg" onClick={() => setPaso({ id: 'inicio' })}>Volver</Boton>
+              <button type="button" onClick={() => void olvide()} disabled={trabajando}
+                className="ml-auto text-[15px] font-semibold text-tenue underline underline-offset-4 hover:text-tinta">¿Olvidaste tu contraseña?</button>
             </div>
           </form>
+        )}
+
+        {paso.id === 'cargando' && (
+          <p className="mt-6 text-[16px] text-tenue" role="status">{trabajando ? 'Abriendo tu cuenta…' : ''}</p>
+        )}
+
+        {paso.id === 'pin' && (
+          <div className="mt-6 grid gap-4">
+            <h1 className="font-display text-[34px] font-black uppercase leading-[0.9]">{paso.primera ? 'Tu PIN de gerente' : 'Un PIN nuevo'}</h1>
+            {!pinNuevo && <>
+              <p className="text-[16px] leading-snug text-tenue">
+                Con el PIN entras en las tablets y firmas todo lo que haces en Pase. Lo crea el sistema al azar y lo verás una sola vez:
+                apréndetelo y no lo anotes donde otros lo vean.{paso.primera ? '' : ' El PIN anterior deja de servir.'}
+              </p>
+              <MensajeError texto={error} />
+              <div className="flex flex-wrap gap-2">
+                <Boton variante="primario" alto="lg" onClick={() => void generarPin(paso.token)} disabled={trabajando}>{trabajando ? 'Generando…' : 'Generar mi PIN'}</Boton>
+                {!paso.primera && <Boton variante="fantasma" alto="lg" onClick={() => setPaso({ id: 'equipo', token: paso.token })}>Volver</Boton>}
+              </div>
+            </>}
+            {pinNuevo && !pinNuevo.visto && <>
+              <p className="text-[16px] leading-snug text-tenue">Este es tu PIN. Míralo con calma y apréndetelo: al seguir, no se vuelve a mostrar.</p>
+              <p className="num rounded-[8px] bg-hundido py-5 text-center font-display text-[64px] font-black leading-none tracking-[0.3em]" aria-label="Tu PIN nuevo">{pinNuevo.pin}</p>
+              <Boton variante="primario" alto="lg" onClick={() => setPinNuevo({ ...pinNuevo, visto: true })}>Ya me lo aprendí</Boton>
+            </>}
+            {pinNuevo?.visto && (
+              <form className="grid gap-4" onSubmit={(e) => {
+                e.preventDefault();
+                if (confirmacion !== pinNuevo.pin) { setError('No coincide. Toca «Verlo otra vez» y vuelve a intentarlo.'); return; }
+                setError(null);
+                setPin(pinNuevo.pin);
+                setPinNuevo(null);
+                setConfirmacion('');
+                setPaso({ id: 'equipo', token: paso.token });
+              }}>
+                <Campo etiqueta="Escríbelo de memoria">
+                  <input type="password" inputMode="numeric" autoComplete="off" value={confirmacion} autoFocus
+                    onChange={(e) => setConfirmacion(e.target.value.replace(/\D/g, '').slice(0, 6))} className={cx(claseEntrada, 'num tracking-[0.4em]')} />
+                </Campo>
+                <MensajeError texto={error} />
+                <div className="flex flex-wrap gap-2">
+                  <Boton type="submit" variante="primario" alto="lg" disabled={confirmacion.length !== pinNuevo.pin.length}>Continuar</Boton>
+                  <Boton variante="fantasma" alto="lg" onClick={() => { setError(null); setPinNuevo({ ...pinNuevo, visto: false }); }}>Verlo otra vez</Boton>
+                </div>
+              </form>
+            )}
+          </div>
         )}
 
         {paso.id === 'activar' && (
@@ -165,6 +261,8 @@ export function Registro({ onRegistrado }: { onRegistrado: (e: EquipoLocal) => v
               <input type="password" inputMode="numeric" autoComplete="off" pattern="[0-9]{4,6}" required value={pin}
                 onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))} className={cx(claseEntrada, 'num tracking-[0.4em]')} />
             </Campo>
+            <button type="button" onClick={() => { setPin(''); setError(null); setPaso({ id: 'pin', token: paso.token, primera: false }); }}
+              className="justify-self-start text-[15px] font-semibold text-tenue underline underline-offset-4 hover:text-tinta">Olvidé mi PIN</button>
             <MensajeError texto={error} />
             <Boton type="submit" variante="primario" alto="lg" disabled={trabajando || nombre.trim().length < 3 || pin.length < 4}>{trabajando ? 'Registrando…' : 'Registrar este equipo'}</Boton>
           </form>
@@ -174,12 +272,12 @@ export function Registro({ onRegistrado }: { onRegistrado: (e: EquipoLocal) => v
   );
 }
 
-const CodigoTotp = ({ valor, onCambio }: { valor: string; onCambio: (v: string) => void }) => (
+export const CodigoTotp = ({ valor, onCambio }: { valor: string; onCambio: (v: string) => void }) => (
   <input inputMode="numeric" autoComplete="one-time-code" aria-label="Código de 6 números" placeholder="000000" value={valor}
     onChange={(e) => onCambio(e.target.value.replace(/\D/g, '').slice(0, 6))}
     className="num h-16 rounded-[8px] border-2 border-linea bg-superficie px-4 text-center font-display text-[40px] font-bold tracking-[0.4em] outline-none focus:border-mostaza" />
 );
 
-const MensajeError = ({ texto }: { texto: string | null }) => texto
+export const MensajeError = ({ texto }: { texto: string | null }) => texto
   ? <p className="flex gap-2 text-[15px] font-semibold leading-snug text-mal" role="alert"><IconoAlerta className="mt-0.5 h-5 w-5 shrink-0" />{texto}</p>
   : null;

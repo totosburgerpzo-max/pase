@@ -147,6 +147,8 @@ function servirArchivo(req, res, archivo, tipo) {
 http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/salud') return json(res, req, 200, { ok: true });
+  // GoTrue local arma los links de los correos sin /auth/v1 (el Supabase de verdad sí lo pone)
+  if (url.pathname === '/verify') return proxy(req, res, DESTINOS.auth, '/verify' + url.search, false);
   const [, servicio, version, ...resto] = url.pathname.split('/');
   const ruta = '/' + resto.join('/') + url.search;
   if (servicio === 'functions' && version === 'v1') {

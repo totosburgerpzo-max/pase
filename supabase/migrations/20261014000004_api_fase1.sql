@@ -922,6 +922,61 @@ language sql volatile security definer set search_path = '' as $$
   where session_id = nullif(app.claims() ->> 'session_id', '')::uuid and metodo <> 'correo'
 $$;
 
+-- Alta de una gerente con cuenta de correo. Solo desde el editor SQL o el script de
+-- publicación (rol postgres): primero se invita el correo en Auth, luego se llama aquí con
+-- el id de esa cuenta. No crea PIN: ella lo genera en su primer ingreso (nuevo_pin_gerente).
+create or replace function app.alta_gerente(
+  p_auth_id uuid, p_nombre text, p_apellido text, p_cargo text default 'Gerente general',
+  p_sucursal uuid default null)
+returns uuid language plpgsql volatile security definer set search_path = '' as $$
+declare
+  v_suc uuid := p_sucursal;
+  v_id  uuid;
+begin
+  if not app.es_proceso_interno() then
+    raise exception 'Solo desde el editor SQL o el script de publicación' using errcode = '42501';
+  end if;
+  if not exists (select 1 from auth.users a where a.id = p_auth_id) then
+    raise exception 'No existe esa cuenta de acceso';
+  end if;
+  select id into v_id from public.usuarios where auth_id = p_auth_id;
+  if v_id is not null then return v_id; end if;            -- ya estaba: no hace nada
+  if v_suc is null then
+    if (select count(*) from public.sucursales) <> 1 then
+      raise exception 'Indica la sucursal: hay más de una';
+    end if;
+    select id into v_suc from public.sucursales;
+  end if;
+  if length(trim(coalesce(p_nombre, ''))) < 2 or length(trim(coalesce(p_apellido, ''))) < 2 then
+    raise exception 'Faltan el nombre y el apellido';
+  end if;
+  insert into public.usuarios (auth_id, sucursal_id, nombre, apellido, cargo, rol, turno)
+  values (p_auth_id, v_suc, trim(p_nombre), trim(p_apellido), nullif(trim(p_cargo), ''), 'admin', 'gerencia')
+  returning id into v_id;
+  return v_id;
+end $$;
+
+-- La gerente genera su PIN (la primera vez, o si lo olvidó) con la sesión de correo,
+-- contraseña y segundo factor. Es el mismo nivel de prueba que pide registrar un equipo,
+-- y más fuerte que el PIN. Se muestra una sola vez y solo a ella.
+create or replace function public.nuevo_pin_gerente() returns jsonb
+language plpgsql volatile security definer set search_path = '' as $$
+declare
+  u     public.usuarios;
+  v_pin text;
+begin
+  select * into u from public.usuarios where auth_id = auth.uid() and activo;
+  if u.id is null then return jsonb_build_object('ok', false, 'motivo', 'sin_sesion'); end if;
+  if u.rol <> 'admin' then return jsonb_build_object('ok', false, 'motivo', 'sin_permiso'); end if;
+  if coalesce(app.claims() ->> 'aal', 'aal1') <> 'aal2' then
+    return jsonb_build_object('ok', false, 'motivo', 'requiere_2fa');
+  end if;
+  v_pin := privado.nuevo_pin(u.id, 6);
+  update privado.credenciales_pin set debe_cambiar = false where usuario_id = u.id;
+  perform auditoria.anotar('PIN_REGENERADO', 'usuarios', u.id::text, null, null, null, null, u.id);
+  return jsonb_build_object('ok', true, 'pin', v_pin);
+end $$;
+
 -- -----------------------------------------------------------------------------
 -- 6. STORAGE Y TAREAS PROGRAMADAS
 -- -----------------------------------------------------------------------------
@@ -987,8 +1042,10 @@ grant execute on function
   public.crear_usuario(jsonb, uuid, int, uuid),
   public.modificar_usuario(uuid, jsonb, uuid),
   public.modificar_dispositivo(uuid, jsonb, uuid),
-  public.cerrar_sesion_equipo()
+  public.cerrar_sesion_equipo(),
+  public.nuevo_pin_gerente()
   to authenticated;
+revoke all on function app.alta_gerente(uuid, text, text, text, uuid) from public, anon, authenticated, service_role;
 
 -- Un equipo solo se registra desde él mismo, con 2FA (registrar_este_dispositivo): la versión
 -- anterior devolvía el secreto a cualquier sesión con permiso, aunque fuera de otra tablet.
