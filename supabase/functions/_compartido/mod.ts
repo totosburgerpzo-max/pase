@@ -102,7 +102,12 @@ export async function rpc<T = unknown>(
     : { ...encabezadosServicio(), 'x-pase-ip': ipCliente(req) };
   const r = await fetch(`${URL_API}/rest/v1/rpc/${nombre}`, {
     method: 'POST',
-    headers: { ...h, 'content-type': 'application/json', 'user-agent': req.headers.get('user-agent') ?? 'Pase' },
+    // El user-agent de la tablet va en x-pase-agente: con el de un navegador, Supabase rechaza
+    // la clave secreta ("Forbidden use of secret API key in browser")
+    headers: {
+      ...h, 'content-type': 'application/json', 'user-agent': 'Pase-funciones',
+      'x-pase-agente': (req.headers.get('user-agent') ?? 'Pase').slice(0, 300),
+    },
     body: JSON.stringify(args),
   });
   const cuerpo = await r.text();
