@@ -3,5 +3,4 @@ local/.env
 local/bin/
 node_modules/
 pruebas/capturas/
-web/config.json
 web/dist/

@@ -3,6 +3,7 @@
 #   Postgres 16 (:54322) · GoTrue (:54324) · PostgREST (:54325) · Edge Functions en Deno (:54326)
 #   y una puerta tipo Kong con Storage simulado (:54321), que es la URL que usa la app.
 # Uso: sh local/iniciar.sh [--limpio]    (--limpio borra la base y la crea de nuevo)
+#      PASE_SIN_MIGRACIONES=1 sh local/iniciar.sh --limpio   (base vacía, como un proyecto nuevo)
 set -e
 cd "$(dirname "$0")"
 AQUI=$(pwd)
@@ -16,7 +17,7 @@ JWT_SECRET=${JWT_SECRET:-pase-local-jwt-secret-de-al-menos-32-caracteres}
 mkdir -p "$DATOS"
 
 for b in postgrest gotrue deno; do
-  [ -x "$BIN/$b" ] || { echo "Falta $BIN/$b (ver local/LEEME.md)"; exit 1; }
+  [ -x "$BIN/$b" ] || { echo "Falta $BIN/$b: corre sh local/bajar.sh"; exit 1; }
 done
 
 como_postgres() {
@@ -76,9 +77,12 @@ export GOTRUE_RATE_LIMIT_OTP=100000
 export GOTRUE_LOG_LEVEL=warn
 if [ -n "$NUEVA" ]; then
   (cd "$BIN" && ./gotrue migrate >"$DATOS/gotrue-migrar.log" 2>&1) || { cat "$DATOS/gotrue-migrar.log"; exit 1; }
-  for f in "$RAIZ"/supabase/migrations/*.sql; do
-    $P -f "$f" >/dev/null || { echo "Error en $f"; exit 1; }
-  done
+  # PASE_SIN_MIGRACIONES=1 deja la base como un proyecto recién creado (para ensayar scripts/desplegar.mjs)
+  if [ -z "$PASE_SIN_MIGRACIONES" ]; then
+    for f in "$RAIZ"/supabase/migrations/*.sql; do
+      $P -f "$f" >/dev/null || { echo "Error en $f"; exit 1; }
+    done
+  fi
 fi
 
 # Detiene un servicio y espera a que suelte su puerto
@@ -127,7 +131,7 @@ echo $! >"$DATOS/puerta.pid"
 for i in $(seq 1 60); do
   if curl -sf -o /dev/null http://127.0.0.1:54324/health && curl -sf -o /dev/null http://127.0.0.1:54325/ -H "Authorization: Bearer $ANON_KEY" \
      && curl -s -o /dev/null http://127.0.0.1:54326/ && curl -sf -o /dev/null http://127.0.0.1:54321/salud; then
-    if [ -n "$NUEVA" ]; then
+    if [ -n "$NUEVA" ] && [ -z "$PASE_SIN_MIGRACIONES" ]; then
       SUPABASE_URL=http://127.0.0.1:54321 SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY" node "$AQUI/sembrar.mjs" || exit 1
     fi
     echo "Supabase local listo en http://127.0.0.1:54321 (llaves en $DATOS/llaves.env)"
