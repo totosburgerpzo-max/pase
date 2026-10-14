@@ -321,9 +321,12 @@ begin
   if p_firmada_en > now() + interval '10 minutes' or p_firmada_en < now() - make_interval(hours => v_horas) then
     return jsonb_build_object('ok', false, 'motivo', 'fuera_de_plazo');
   end if;
-  if not exists (select 1 from privado.sesiones_dispositivo s
-                 where s.dispositivo_id = d.id and s.usuario_id = u.id and s.metodo = 'pin'
-                   and s.creada_en > p_firmada_en - make_interval(days => v_dias)) then
+  -- Debe haber entrado con su PIN en este equipo antes de firmar, dentro de los días en que
+  -- el equipo guarda su verificador (la sesión puede haberse cerrado después al bloquear).
+  if not exists (select 1 from privado.intentos_pin i
+                 where i.dispositivo_id = d.id and i.usuario_id = u.id and i.exito and i.contexto = 'sesion'
+                   and i.ocurrido_en between p_firmada_en - make_interval(days => v_dias)
+                                         and p_firmada_en + interval '10 minutes') then
     return jsonb_build_object('ok', false, 'motivo', 'sin_ingreso_reciente');
   end if;
   v_firma := public.registrar_firma_sin_conexion(u.id, d.id, p_accion, p_entidad, p_entidad_id, p_firmada_en);
@@ -435,6 +438,26 @@ returns jsonb language sql stable security definer set search_path = '' as $$
     limit least(coalesce(p_limite, 100), 500)) t
 $$;
 
+-- Una incidencia como la muestra la app (lista de incidencias y detalle de una planilla)
+create or replace function app.json_incidencia(n public.incidencias) returns jsonb
+language sql stable security definer set search_path = '' as $$
+  select jsonb_build_object(
+    'id', n.id, 'titulo', n.titulo, 'descripcion', n.descripcion, 'area', coalesce(n.area, p.area::text),
+    'origen', n.origen, 'severidad', n.severidad, 'estado', n.estado, 'bloquea', n.bloquea_operacion,
+    'codigo_plantilla', p.codigo, 'nombre_plantilla', p.nombre, 'ref_item', i.ref, 'ejecucion_id', n.ejecucion_id,
+    'reportada_por', n.reportada_por, 'reportada_por_nombre', app.nombre_de(n.reportada_por), 'reportada_en', n.reportada_en,
+    'asignada_a', n.asignada_a, 'asignada_a_nombre', app.nombre_de(n.asignada_a),
+    'vence_en', n.vence_en, 'escalada', n.escalada, 'accion_correctiva', n.accion_correctiva, 'causa_raiz', n.causa_raiz,
+    'resuelta_por', n.resuelta_por, 'resuelta_por_nombre', app.nombre_de(n.resuelta_por), 'resuelta_en', n.resuelta_en,
+    'verificada_por_nombre', app.nombre_de(n.verificada_por), 'verificada_en', n.verificada_en,
+    'evidencia', (select jsonb_build_object('id', v.id, 'ruta', v.ruta_storage, 'mime', v.mime)
+                  from public.evidencias v where v.id = n.evidencia_id),
+    'orden', case n.severidad when 'critica' then 0 when 'alta' then 1 when 'media' then 2 else 3 end)
+  from (select 1) uno
+  left join public.plantillas p on p.id = n.plantilla_id
+  left join public.plantilla_items i on i.id = n.item_id
+$$;
+
 create or replace function public.pase_ejecucion(p_id uuid)
 returns jsonb language sql stable security definer set search_path = '' as $$
   select jsonb_build_object(
@@ -465,9 +488,8 @@ returns jsonb language sql stable security definer set search_path = '' as $$
       join public.plantilla_secciones s on s.id = i.seccion_id
       where r.ejecucion_id = e.id),
     'incidencias', (
-      select coalesce(jsonb_agg(jsonb_build_object('id', n.id, 'titulo', n.titulo, 'severidad', n.severidad,
-                                                   'estado', n.estado) order by n.reportada_en), '[]'::jsonb)
-      from public.incidencias n where n.ejecucion_id = e.id))
+      select coalesce(jsonb_agg(app.json_incidencia(n) order by n.reportada_en), '[]'::jsonb)
+      from public.incidencias n where n.ejecucion_id = e.id and not n.anulado))
   from public.checklist_ejecuciones e
   join public.plantillas p on p.id = e.plantilla_id
   where e.id = p_id and e.sucursal_id = app.sucursal_actual()
@@ -477,21 +499,8 @@ $$;
 create or replace function public.pase_incidencias(p_activas boolean default true, p_limite int default 100)
 returns jsonb language sql stable security definer set search_path = '' as $$
   select coalesce(jsonb_agg(x order by (x ->> 'orden')::int, x ->> 'reportada_en' desc), '[]'::jsonb) from (
-    select jsonb_build_object(
-      'id', n.id, 'titulo', n.titulo, 'descripcion', n.descripcion, 'area', coalesce(n.area, p.area::text),
-      'origen', n.origen, 'severidad', n.severidad, 'estado', n.estado, 'bloquea', n.bloquea_operacion,
-      'codigo_plantilla', p.codigo, 'nombre_plantilla', p.nombre, 'ref_item', i.ref, 'ejecucion_id', n.ejecucion_id,
-      'reportada_por', n.reportada_por, 'reportada_por_nombre', app.nombre_de(n.reportada_por), 'reportada_en', n.reportada_en,
-      'asignada_a', n.asignada_a, 'asignada_a_nombre', app.nombre_de(n.asignada_a),
-      'vence_en', n.vence_en, 'escalada', n.escalada, 'accion_correctiva', n.accion_correctiva, 'causa_raiz', n.causa_raiz,
-      'resuelta_por', n.resuelta_por, 'resuelta_por_nombre', app.nombre_de(n.resuelta_por), 'resuelta_en', n.resuelta_en,
-      'verificada_por_nombre', app.nombre_de(n.verificada_por), 'verificada_en', n.verificada_en,
-      'evidencia', (select jsonb_build_object('id', v.id, 'ruta', v.ruta_storage, 'mime', v.mime)
-                    from public.evidencias v where v.id = n.evidencia_id),
-      'orden', case n.severidad when 'critica' then 0 when 'alta' then 1 when 'media' then 2 else 3 end) as x
+    select app.json_incidencia(n) as x
     from public.incidencias n
-    left join public.plantillas p on p.id = n.plantilla_id
-    left join public.plantilla_items i on i.id = n.item_id
     where n.sucursal_id = app.sucursal_actual() and not n.anulado
       and (n.reportada_por = app.usuario_actual() or n.asignada_a = app.usuario_actual()
            or app.tiene_permiso('incidencias.gestionar'))

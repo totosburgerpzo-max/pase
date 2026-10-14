@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Pase · Totos Burger
+   Concepto: la cocina como interfaz. Acero inoxidable de fondo, comandas de papel térmico
+   para lo pendiente y lo firmado, mostaza como único acento. Letra condensada de rótulo
+   para lo que se lee a un metro (hora, temperaturas, códigos), Barlow para leer y
+   IBM Plex Mono para lo que imprime una ticketera. */
+:root {
+  --fondo: 231 235 237;        /* acero */
+  --superficie: 251 252 252;
+  --hundido: 219 225 228;
+  --tinta: 21 25 28;
+  --tenue: 86 97 105;
+  --linea: 196 205 210;
+  --mostaza: 242 183 5;
+  --mostaza-tinta: 28 23 6;
+  --mostaza-texto: 128 92 0;
+  --papel: 255 254 249;
+  --papel-tinta: 30 30 28;
+  --bien: 21 120 69;
+  --mal: 192 41 35;
+  --aviso: 194 92 10;
+  --info: 40 84 196;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --fondo: 17 20 22;
+    --superficie: 27 31 34;
+    --hundido: 12 14 16;
+    --tinta: 230 235 237;
+    --tenue: 148 159 167;
+    --linea: 52 60 66;
+    --mostaza: 245 193 38;
+    --mostaza-tinta: 28 23 6;
+    --mostaza-texto: 245 193 38;
+    --papel: 238 236 226;
+    --papel-tinta: 30 30 28;
+    --bien: 82 199 133;
+    --mal: 255 112 102;
+    --aviso: 255 163 77;
+    --info: 128 162 255;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --fondo: 17 20 22;
+  --superficie: 27 31 34;
+  --hundido: 12 14 16;
+  --tinta: 230 235 237;
+  --tenue: 148 159 167;
+  --linea: 52 60 66;
+  --mostaza: 245 193 38;
+  --mostaza-tinta: 28 23 6;
+  --mostaza-texto: 245 193 38;
+  --papel: 238 236 226;
+  --papel-tinta: 30 30 28;
+  --bien: 82 199 133;
+  --mal: 255 112 102;
+  --aviso: 255 163 77;
+  --info: 128 162 255;
+  color-scheme: dark;
+}
+
+html, body { height: 100%; }
+#raiz { min-height: 100%; display: flex; flex-direction: column; }
+body {
+  background: rgb(var(--fondo));
+  color: rgb(var(--tinta));
+  font-family: Barlow, "Segoe UI", Roboto, system-ui, sans-serif;
+  font-size: 16px;
+  -webkit-tap-highlight-color: transparent;
+}
+h1, h2, h3 { text-wrap: balance; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* Acero cepillado: solo en la pantalla de bloqueo */
+.acero {
+  background-color: rgb(var(--fondo));
+  background-image:
+    repeating-linear-gradient(180deg, rgb(var(--tinta) / 0.018) 0 1px, transparent 1px 3px),
+    linear-gradient(115deg, rgb(var(--superficie) / 0.55), transparent 45%, rgb(var(--superficie) / 0.35) 70%, transparent);
+}
+
+/* Papel térmico con borde dentado inferior */
+.comanda {
+  background: rgb(var(--papel));
+  color: rgb(var(--papel-tinta));
+  --diente: 10px;
+  -webkit-mask: conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) 50% / var(--diente) 100%;
+          mask: conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) 50% / var(--diente) 100%;
+  padding-bottom: calc(var(--diente) / 2 + 12px);
+}
+.comanda-sombra { filter: drop-shadow(0 6px 10px rgb(0 0 0 / 0.16)) drop-shadow(0 1px 1px rgb(0 0 0 / 0.12)); }
+
+/* Riel de comandas: barra de aluminio de la que cuelgan los tickets */
+.riel {
+  height: 14px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, rgb(var(--superficie)) 0%, rgb(var(--linea)) 55%, rgb(var(--tenue) / 0.6) 100%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.35), 0 2px 4px rgb(0 0 0 / 0.12);
+}
+
+/* Tecla física: borde inferior que se hunde al presionar */
+.tecla {
+  background: rgb(var(--superficie));
+  border: 1px solid rgb(var(--linea));
+  box-shadow: inset 0 -3px 0 rgb(var(--linea));
+  transition: transform .06s ease, box-shadow .06s ease, background-color .12s ease;
+}
+.tecla:active:not(:disabled) { transform: translateY(2px); box-shadow: inset 0 -1px 0 rgb(var(--linea)); }
+
+.sin-barra::-webkit-scrollbar { height: 6px; }
+.sin-barra::-webkit-scrollbar-thumb { background: rgb(var(--linea)); border-radius: 3px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+}

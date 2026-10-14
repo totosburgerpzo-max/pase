@@ -216,7 +216,11 @@ const sinc = async (envio, fotos = {}) => {
   return { estado: r.status, j: await r.json() };
 };
 {
-  await pinSesion(carlos.pin); // Carlos entró con su PIN en esta tablet hace poco
+  // Carlos entró con su PIN en esta tablet hace una hora, se quedó sin internet y bloqueó la pantalla
+  const sCarlos = (await pinSesion(carlos.pin)).j;
+  await rpc('cerrar_sesion_equipo', {}, sCarlos.sesion.access_token);
+  await db.query(`update privado.intentos_pin set ocurrido_en = now() - interval '1 hour'
+                  where id = (select max(id) from privado.intentos_pin where usuario_id = $1 and exito and contexto = 'sesion')`, [carlos.id]);
   const cat = (await rpc('pase_catalogo', {}, tokAna)).j;
   const pl = cat.find((p) => p.codigo === '17A') ?? cat[0];
   const items = pl.secciones.flatMap((s) => s.items);
@@ -242,7 +246,7 @@ const sinc = async (envio, fotos = {}) => {
   const malo = await sinc({ ...envio, secreto: 'falso' }, { [idF]: WEBP });
   ok(malo.estado === 422 && malo.j.motivo === 'dispositivo_no_registrado', 'P18 sin el secreto del equipo no se acepta nada', malo.j);
   const r = await sinc(envio, { [idF]: WEBP });
-  ok(r.estado === 200 && r.j.ok && r.j.resultado?.ok, 'P18 la planilla firmada sin internet llega con su foto', r.j);
+  ok(r.estado === 200 && r.j.ok && r.j.resultado?.ok, 'P18 la planilla firmada sin internet llega con su foto, aunque después bloqueó la tablet', r.j);
   const otra = await sinc(envio, { [idF]: WEBP });
   ok(otra.estado === 200 && otra.j.resultado?.ya_existia, 'P19 reenviarla no la duplica', otra.j);
   const fila = (await db.query(`select e.registrada_sin_conexion, e.completada_en, e.realizada_por, f.metodo, f.firmada_sin_conexion_en
@@ -254,6 +258,9 @@ const sinc = async (envio, fotos = {}) => {
   ok(dueno?.owner_id === authCarlos, 'P19 la foto queda a nombre de Carlos', dueno);
   const sinIngreso = await sinc({ ...envio, usuario_id: idGerente, planilla: { ...envio.planilla, ejecucion: { ...envio.planilla.ejecucion, id: randomUUID() } } });
   ok(sinIngreso.estado === 422 && sinIngreso.j.motivo === 'sin_ingreso_reciente', 'P20 si esa persona no entró en esta tablet, no se acepta', sinIngreso.j);
+  const antes = await sinc({ ...envio, firmada_en: new Date(Date.now() - 3 * 3600_000).toISOString(),
+    planilla: { ...envio.planilla, ejecucion: { ...envio.planilla.ejecucion, id: randomUUID() } } });
+  ok(antes.estado === 422 && antes.j.motivo === 'sin_ingreso_reciente', 'P20 una firma anterior a su ingreso en la tablet no se acepta', antes.j);
   const inc = await sinc({
     dispositivo: DEMO.tablet.id, secreto: DEMO.tablet.secreto, tipo: 'incidencia', usuario_id: carlos.id, firmada_en: firmadaEn,
     incidencia: { incidencia: { id: randomUUID(), titulo: 'Fuga de agua en el lavaplatos', severidad: 'media', area: 'Cocina' }, evidencia: null },

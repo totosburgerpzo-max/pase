@@ -406,6 +406,12 @@ end $$;
 -- =============================================================================
 -- Sin conexión
 -- =============================================================================
+-- Carlos (operativo) entró con su PIN en la tablet hace una hora y luego bloqueó la pantalla
+-- (el bloqueo borra su sesión, pero no el registro de su ingreso).
+reset role;
+update privado.intentos_pin set ocurrido_en = now() - interval '1 hour'
+ where exito and contexto = 'sesion' and dispositivo_id = 'dd000000-0000-4000-8000-000000000001';
+delete from privado.sesiones_dispositivo where usuario_id = 'b1000000-0000-4000-8000-000000000003' and metodo = 'pin';
 :servicio
 do $$ declare r jsonb; begin
   r := public.sincronizar_firma('dd000000-0000-4000-8000-000000000001', 'falso', 'b1000000-0000-4000-8000-000000000003',
@@ -413,6 +419,10 @@ do $$ declare r jsonb; begin
   assert r ->> 'motivo' = 'dispositivo_no_registrado', r::text;
   r := public.sincronizar_firma('dd000000-0000-4000-8000-000000000001', current_setting('t.secreto'), 'b1000000-0000-4000-8000-000000000001',
                                 'crear', 'checklist_ejecuciones', 'e2000000-0000-4000-8000-000000000002', now() - interval '20 minutes');
+  assert r ->> 'motivo' = 'sin_ingreso_reciente', r::text;
+  -- firmó antes de entrar en la tablet: ese equipo no podía tener su verificador
+  r := public.sincronizar_firma('dd000000-0000-4000-8000-000000000001', current_setting('t.secreto'), 'b1000000-0000-4000-8000-000000000003',
+                                'crear', 'checklist_ejecuciones', 'e2000000-0000-4000-8000-000000000002', now() - interval '3 hours');
   assert r ->> 'motivo' = 'sin_ingreso_reciente', r::text;
   r := public.sincronizar_firma('dd000000-0000-4000-8000-000000000001', current_setting('t.secreto'), 'b1000000-0000-4000-8000-000000000003',
                                 'crear', 'checklist_ejecuciones', 'e2000000-0000-4000-8000-000000000002', now() - interval '5 days');
@@ -424,7 +434,7 @@ do $$ declare r jsonb; begin
   -- la función abre una sesión de esa persona para reenviar el registro con sus permisos
   perform public.pin_vincular_sesion('c1000000-0000-4000-8000-000000000013', 'dd000000-0000-4000-8000-000000000001',
                                      'b1000000-0000-4000-8000-000000000003', 'sincronizacion');
-  raise notice 'OK A20 firma sin conexión: valida el secreto, el ingreso reciente y el plazo de 72 h';
+  raise notice 'OK A20 firma sin conexión: valida el secreto, el ingreso previo en el equipo (aunque haya bloqueado) y el plazo de 72 h';
 end $$;
 reset role; select pg_temp.sesion('f1000000-0000-4000-8000-000000000003', 'c1000000-0000-4000-8000-000000000013'); set role authenticated;
 do $$ declare r jsonb; v_pl uuid; begin

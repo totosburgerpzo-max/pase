@@ -664,12 +664,16 @@ end $$;
 -- si alguien con acceso total desactiva el trigger y altera un registro, la cadena lo delata
 alter table auditoria.registros disable trigger auditoria_inmutable;
 select set_config('t.alterado', (select (max(id) - 40)::text from auditoria.registros), false);
+select set_config('t.original', (select valores_nuevos::text from auditoria.registros where id = current_setting('t.alterado')::bigint), false);
 update auditoria.registros set valores_nuevos = '{"cantidad": 1}' where id = current_setting('t.alterado')::bigint;
-alter table auditoria.registros enable trigger auditoria_inmutable;
 do $$ begin
   assert auditoria.verificar_cadena() = current_setting('t.alterado')::bigint, 'la alteración no se detectó';
   raise notice 'OK T48 una alteración directa se detecta en el registro %', auditoria.verificar_cadena();
 end $$;
+-- se deja como estaba para que las pruebas siguientes partan de una cadena íntegra
+update auditoria.registros set valores_nuevos = current_setting('t.original')::jsonb where id = current_setting('t.alterado')::bigint;
+alter table auditoria.registros enable trigger auditoria_inmutable;
+do $$ begin assert auditoria.verificar_cadena() is null, 'la cadena no quedó íntegra tras restaurar'; end $$;
 
 -- ---------- API anónima ----------
 reset role;
